@@ -31,3 +31,4 @@ net.floodlightcontroller.routing.RoutingManager
 net.floodlightcontroller.cpanalyzer.CPAnalyzer
 net.floodlightcontroller.hasupport.HAController
 net.floodlightcontroller.hubmaker.HubMaker
+net.floodlightcontroller.myfirewall.MyFirewall

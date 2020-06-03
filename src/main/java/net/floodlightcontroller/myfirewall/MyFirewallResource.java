@@ -1,8 +1,8 @@
 package net.floodlightcontroller.myfirewall;
 
 import java.io.IOException;
-import java.util.Iterator;
 import java.util.List;
+import java.util.Collections;
 
 import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.core.JsonParser;
@@ -11,7 +11,7 @@ import com.fasterxml.jackson.databind.MappingJsonFactory;
 
 import org.projectfloodlight.openflow.types.DatapathId;
 import org.projectfloodlight.openflow.types.EthType;
-import org.projectfloodlight.openflow.types.IPv4AddressWithMask;
+import org.projectfloodlight.openflow.types.IPv4Address;
 import org.projectfloodlight.openflow.types.IpProtocol;
 import org.projectfloodlight.openflow.types.MacAddress;
 import org.projectfloodlight.openflow.types.OFPort;
@@ -27,32 +27,79 @@ public class MyFirewallResource extends ServerResource {
 	protected static Logger log = LoggerFactory.getLogger(MyFirewallResource.class);
 
 	@Get("json")
-	public List<FirewallRule> retrieve() {
+	public List<FirewallRule> list() {
 		return MyFirewall.rules;
 	}
 
+	private void solvePriorityConflict(int p, List<FirewallRule> list) {
+		Collections.sort(list);
+		boolean found = false;
+		int i, j;
+		for (i = 0, j = list.size(); i < j; ++i) {
+			if (list.get(i).priority == p) {
+				found = true;
+				break;
+			}
+		}
+		if (found) { // solve priority conflicts
+			for (; i < j; ++i) {
+				FirewallRule r = list.get(i);
+				if (r.priority == p || r.priority == ++p) {
+					r.priority = p + 1;
+					log.info("Rule " + r.ruleid + " priority " + p + " -> " + (p + 1));
+					list.set(i, r);
+				} else {
+					break;
+				}
+			}
+		}
+	}
+
 	@Post
-	public String store(String fmJson) {
+	public String add(String fmJson) {
 		FirewallRule rule = jsonToFirewallRule(fmJson);
 		if (rule == null) {
-			return "{\"status\" : \"Error! Could not parse firewall rule, see log for details.\"}";
+			return "{\"code\":0, \"status\" : \"Error! Could not parse firewall rule, see log for details.\"}\n";
 		}
 		String status = null;
-		if (checkRuleExists(rule, MyFirewall.rules)) {
-			status = "Error! A similar firewall rule already exists.";
-			log.error(status);
-			return ("{\"status\" : \"" + status + "\"}");
-		} else {
-			String res = checkRuleOverlap(rule, MyFirewall.rules);
-			if (res != null) { // isOverlapable
-				status = "Rule Not added";
-				log.error(res);
-				return ("{\"status\" : \"" + status + "\"}");
+		synchronized (MyFirewall.rules) {
+			if (checkRuleExists(rule, MyFirewall.rules)) {
+				status = "Error! A similar firewall rule already exists.";
+				log.error(status);
+				return ("{\"code\":0, \"status\" : \"" + status + "\"}\n");
+			} else {
+				if (rule.ruleid != -1) {
+					boolean found = false;
+					int i, j;
+					int id = rule.ruleid;
+					for (i = 0, j = MyFirewall.rules.size(); i < j; ++i) {
+						if (MyFirewall.rules.get(i).ruleid == id) {
+							found = true;
+							break;
+						}
+					}
+					if (found) {
+						int p = rule.priority;
+						rule.priority = -1;
+						MyFirewall.rules.set(i, rule);
+						solvePriorityConflict(p, MyFirewall.rules);
+						Collections.sort(MyFirewall.rules);
+						rule.priority = p;
+						MyFirewall.rules.set(0, rule);
+						Collections.sort(MyFirewall.rules);
+						status = "Rule " + Integer.toString(rule.ruleid) + " editted";
+						log.info(status);
+						return ("{\"code\":1, \"status\" : \"" + status + "\"}\n");
+					}
+				} else {
+					rule.ruleid = MyFirewall.rule_id++;
+				}
+				solvePriorityConflict(rule.priority, MyFirewall.rules);
+				MyFirewall.rules.add(rule);
+				Collections.sort(MyFirewall.rules);
+				return ("{\"code\":1, \"status\" : \"Rule added\", \"rule-id\" : \"" + Integer.toString(rule.ruleid)
+						+ "\"}\n");
 			}
-			// TODO: add rule to firewall
-			status = "Rule added";
-			return ("{\"status\" : \"" + status + "\", \"rule-id\" : \"" + Integer.toString(rule.ruleid) + "\"}");
-
 		}
 	}
 
@@ -60,31 +107,36 @@ public class MyFirewallResource extends ServerResource {
 	public String remove(String fmJson) {
 		FirewallRule rule = jsonToFirewallRule(fmJson);
 		if (rule == null) {
-			return "{\"status\" : \"Error! Could not parse firewall rule, see log for details.\"}";
+			return "{\"code\":0, \"status\" : \"Error! Could not parse firewall rule, see log for details.\"}\n";
 		}
 
 		String status = null;
 		boolean exists = false;
-		for (FirewallRule r : MyFirewall.rules) {
-			if (r.ruleid == rule.ruleid) {
+		int i, j;
+		for (i = 0, j = MyFirewall.rules.size(); i < j; ++i) {
+			if (MyFirewall.rules.get(i).ruleid == rule.ruleid) {
 				exists = true;
 				break;
 			}
 		}
+		int code = 0;
 		if (!exists) {
 			status = "Error! Can't delete, a rule with this ID doesn't exist.";
 			log.error(status);
 		} else {
-			// TODO: delete rule from firewall
+			MyFirewall.rules.remove(i);
 			status = "Rule deleted";
+			code = 1;
 		}
-		return ("{\"status\" : \"" + status + "\"}");
+		return ("{\"code\":" + code + ", \"status\" : \"" + status + "\"}\n");
 	}
 
 	public static FirewallRule jsonToFirewallRule(String fmJson) {
+		log.info(fmJson);
 		FirewallRule rule = new FirewallRule();
 		MappingJsonFactory f = new MappingJsonFactory();
 		JsonParser jp;
+		rule.ruleid = -1;
 		try {
 			try {
 				jp = f.createParser(fmJson);
@@ -116,97 +168,43 @@ public class MyFirewallResource extends ServerResource {
 					} catch (IllegalArgumentException e) {
 						log.error("Unable to parse rule ID: {}", jp.getText());
 					}
-				}
-
-				// This assumes user having dpid info for involved switches
-				else if (n.equalsIgnoreCase("switchid")) {
+				} else if (n.equalsIgnoreCase("switchid")) {
 					rule.any_dpid = false;
 					try {
 						rule.dpid = DatapathId.of(jp.getText());
 					} catch (NumberFormatException e) {
 						log.error("Unable to parse switch DPID: {}", jp.getText());
-						// TODO should return some error message via HTTP message
 					}
-				}
-
-				else if (n.equalsIgnoreCase("src-inport")) {
+				} else if (n.equalsIgnoreCase("src-inport")) {
 					rule.any_in_port = false;
 					try {
 						rule.in_port = OFPort.of(Integer.parseInt(jp.getText()));
 					} catch (NumberFormatException e) {
 						log.error("Unable to parse ingress port: {}", jp.getText());
-						// TODO should return some error message via HTTP message
 					}
-				}
-
-				else if (n.equalsIgnoreCase("src-mac")) {
+				} else if (n.equalsIgnoreCase("src-mac")) {
 					if (!jp.getText().equalsIgnoreCase("ANY")) {
 						rule.any_dl_src = false;
 						try {
 							rule.dl_src = MacAddress.of(jp.getText());
 						} catch (IllegalArgumentException e) {
 							log.error("Unable to parse source MAC: {}", jp.getText());
-							// TODO should return some error message via HTTP message
 						}
 					}
-				}
-
-				else if (n.equalsIgnoreCase("dst-mac")) {
+				} else if (n.equalsIgnoreCase("dst-mac")) {
 					if (!jp.getText().equalsIgnoreCase("ANY")) {
 						rule.any_dl_dst = false;
 						try {
 							rule.dl_dst = MacAddress.of(jp.getText());
 						} catch (IllegalArgumentException e) {
 							log.error("Unable to parse destination MAC: {}", jp.getText());
-							// TODO should return some error message via HTTP message
 						}
 					}
-				}
-
-				else if (n.equalsIgnoreCase("dl-type")) {
+				} else if (n.equalsIgnoreCase("proto")) {
 					if (jp.getText().equalsIgnoreCase("ARP")) {
 						rule.any_dl_type = false;
 						rule.dl_type = EthType.ARP;
-					} else if (jp.getText().equalsIgnoreCase("IPv4")) {
-						rule.any_dl_type = false;
-						rule.dl_type = EthType.IPv4;
-					}
-				}
-
-				else if (n.equalsIgnoreCase("src-ip")) {
-					if (!jp.getText().equalsIgnoreCase("ANY")) {
-						rule.any_nw_src = false;
-						if (rule.dl_type.equals(EthType.NONE)) {
-							rule.any_dl_type = false;
-							rule.dl_type = EthType.IPv4;
-						}
-						try {
-							rule.nw_src_prefix_and_mask = IPv4AddressWithMask.of(jp.getText());
-						} catch (IllegalArgumentException e) {
-							log.error("Unable to parse source IP: {}", jp.getText());
-							// TODO should return some error message via HTTP message
-						}
-					}
-				}
-
-				else if (n.equalsIgnoreCase("dst-ip")) {
-					if (!jp.getText().equalsIgnoreCase("ANY")) {
-						rule.any_nw_dst = false;
-						if (rule.dl_type.equals(EthType.NONE)) {
-							rule.any_dl_type = false;
-							rule.dl_type = EthType.IPv4;
-						}
-						try {
-							rule.nw_dst_prefix_and_mask = IPv4AddressWithMask.of(jp.getText());
-						} catch (IllegalArgumentException e) {
-							log.error("Unable to parse destination IP: {}", jp.getText());
-							// TODO should return some error message via HTTP message
-						}
-					}
-				}
-
-				else if (n.equalsIgnoreCase("nw-proto")) {
-					if (jp.getText().equalsIgnoreCase("TCP")) {
+					} else if (jp.getText().equalsIgnoreCase("TCP")) {
 						rule.any_nw_proto = false;
 						rule.nw_proto = IpProtocol.TCP;
 						rule.any_dl_type = false;
@@ -222,38 +220,53 @@ public class MyFirewallResource extends ServerResource {
 						rule.any_dl_type = false;
 						rule.dl_type = EthType.IPv4;
 					}
-				}
-
-				else if (n.equalsIgnoreCase("tp-src")) {
+				} else if (n.equalsIgnoreCase("src-ip")) {
+					if (!jp.getText().equalsIgnoreCase("ANY")) {
+						rule.any_nw_src = false;
+						if (rule.dl_type.equals(EthType.NONE)) {
+							rule.any_dl_type = false;
+							rule.dl_type = EthType.IPv4;
+						}
+						try {
+							rule.nw_src = IPv4Address.of(jp.getText());
+						} catch (IllegalArgumentException e) {
+							log.error("Unable to parse source IP: {}", jp.getText());
+						}
+					}
+				} else if (n.equalsIgnoreCase("dst-ip")) {
+					if (!jp.getText().equalsIgnoreCase("ANY")) {
+						rule.any_nw_dst = false;
+						if (rule.dl_type.equals(EthType.NONE)) {
+							rule.any_dl_type = false;
+							rule.dl_type = EthType.IPv4;
+						}
+						try {
+							rule.nw_dst = IPv4Address.of(jp.getText());
+						} catch (IllegalArgumentException e) {
+							log.error("Unable to parse destination IP: {}", jp.getText());
+						}
+					}
+				} else if (n.equalsIgnoreCase("tp-src")) {
 					rule.any_tp_src = false;
 					try {
 						rule.tp_src = TransportPort.of(Integer.parseInt(jp.getText()));
 					} catch (IllegalArgumentException e) {
 						log.error("Unable to parse source transport port: {}", jp.getText());
-						// TODO should return some error message via HTTP message
 					}
-				}
-
-				else if (n.equalsIgnoreCase("tp-dst")) {
+				} else if (n.equalsIgnoreCase("tp-dst")) {
 					rule.any_tp_dst = false;
 					try {
 						rule.tp_dst = TransportPort.of(Integer.parseInt(jp.getText()));
 					} catch (IllegalArgumentException e) {
 						log.error("Unable to parse destination transport port: {}", jp.getText());
-						// TODO should return some error message via HTTP message
 					}
-				}
-
-				else if (n.equalsIgnoreCase("priority")) {
+				} else if (n.equalsIgnoreCase("priority")) {
 					try {
 						rule.priority = Integer.parseInt(jp.getText());
 					} catch (IllegalArgumentException e) {
 						log.error("Unable to parse priority: {}", jp.getText());
-						// TODO should return some error message via HTTP message
 					}
-				}
-
-				else if (n.equalsIgnoreCase("action")) {
+				} else if (n.equalsIgnoreCase("action")) {
 					if (jp.getText().equalsIgnoreCase("allow") || jp.getText().equalsIgnoreCase("accept")) {
 						rule.action = FirewallRule.FirewallAction.ALLOW;
 					} else if (jp.getText().equalsIgnoreCase("deny") || jp.getText().equalsIgnoreCase("drop")) {
@@ -264,22 +277,20 @@ public class MyFirewallResource extends ServerResource {
 		} catch (IOException e) {
 			log.error("Unable to parse JSON string: {}", e);
 		}
-
 		return rule;
 	}
 
 	public static boolean checkRuleExists(FirewallRule rule, List<FirewallRule> rules) {
-		Iterator<FirewallRule> iter = rules.iterator();
-		while (iter.hasNext()) {
-			FirewallRule r = iter.next();
-
-			// check if we find a similar rule
+		for (FirewallRule r : rules) {
 			if (rule.isSameAs(r)) {
-				return true;
+				log.info("Same with rule " + r.ruleid);
+				if (rule.ruleid == r.ruleid && rule.priority != r.priority) {
+					return false;
+				} else {
+					return true;
+				}
 			}
 		}
-
-		// no rule matched, so it doesn't exist in the rules
 		return false;
 	}
 }
