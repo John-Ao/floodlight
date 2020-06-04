@@ -108,23 +108,20 @@ public class FirewallRule implements Comparable<FirewallRule> {
         return true;
     }
 
-    public int ruleid;
+    public int ruleid;              // 规则编号
 
-    public DatapathId dpid;
-    public OFPort in_port;
-    public MacAddress dl_src;
-    public MacAddress dl_dst;
-    public EthType dl_type;
-    public IPv4Address nw_src;
-    public IPv4Address nw_dst;
-    public IpProtocol nw_proto;
-    public TransportPort tp_src;
-    public TransportPort tp_dst;
+    public DatapathId dpid;         // 交换机编号
+    public OFPort in_port;          // 交换机端口
+    public MacAddress dl_src;       // 源MAC地址
+    public MacAddress dl_dst;       // 目的MAC
+    public EthType dl_type;         // 链路层协议类型，ARP / IPv4
+    public IPv4Address nw_src;      // 源IP
+    public IPv4Address nw_dst;      // 目的IP
+    public IpProtocol nw_proto;     // 网络层协议，TCP / UDP / ICMP
+    public TransportPort tp_src;    // 源端口
+    public TransportPort tp_dst;    // 目的端口
 
-    /*
-     * Specify whether or not a match field is relevant. true = anything goes; don't
-     * care what it is false = field must match (w or w/o mask depending on field)
-     */
+    // 判断上述变量是否为通配符
     public boolean any_dpid;
     public boolean any_in_port;
     public boolean any_dl_src;
@@ -136,9 +133,9 @@ public class FirewallRule implements Comparable<FirewallRule> {
     public boolean any_tp_src;
     public boolean any_tp_dst;
 
-    public int priority = 0;
+    public int priority = 0;        // 优先级
 
-    public FirewallAction action;
+    public FirewallAction action;   // 行为
 
     public enum FirewallAction {
         DROP, ALLOW

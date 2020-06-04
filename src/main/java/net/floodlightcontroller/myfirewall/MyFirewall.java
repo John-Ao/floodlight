@@ -132,8 +132,8 @@ public class MyFirewall implements IOFMessageListener, IFloodlightModule {
 				System.out.println("[" + getEthName(eth) + "] Rule " + matched_rule.ruleid + " matched, "
 						+ String.valueOf(matched_rule.action));
 			}
-			// matched_rule == null ||
-			if (matched_rule != null && matched_rule.action == FirewallAction.DROP) {
+			// if (matched_rule != null && matched_rule.action == FirewallAction.DROP) {
+			if (matched_rule == null || matched_rule.action == FirewallAction.DROP) {
 				drop = true;
 			}
 		}
